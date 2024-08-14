@@ -1,0 +1,256 @@
+---
+title: "dcco_bcnh_nestdensity_aug13"
+output: html_document
+date: "2024-08-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This script does the following:
+
+Prepares the data by grouping it by year, peninsula, and species (tag).
+Calculates the sum of nest counts for each group.
+Reshapes the data for easier analysis and plotting.
+Creates a line plot showing nest counts over time for each species and peninsula.
+Generates a statistical summary with mean, standard deviation, minimum, and maximum counts.
+Performs a simple trend analysis using linear regression for each species and peninsula.
+Calculates & visualizes Moran's I (spatial autocorrelation) over time
+
+## Load libraries & database file
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(spdep)
+library(sf)
+
+nest_data <-read.csv("C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/arcgismerged_cleanedbcnhdcco.csv")
+```
+
+## Data prep & analysis
+Ensure each year treated as numeric value, grouped by year, peninsula, and tag. Summarize count for each species. 
+Then reshape for easier plotting & clean column names for species.
+
+```{r}
+nest_summary <- nest_data %>%
+  mutate(year = as.numeric(year)) %>%
+  group_by(year, peninsula, tag, xcoord, ycoord) %>% 
+  summarise(
+    bcnh_count = sum(bcnh_count),
+    dcco_count = sum(dcco_count),
+    .groups = 'drop'
+  ) %>%
+  tidyr::pivot_longer(
+    cols = c(bcnh_count, dcco_count),
+    names_to = "species",
+    values_to = "count"
+  ) %>%
+  mutate(species = ifelse(species == "bcnh_count", "BCNH", "DCCO"))
+```
+
+## Plot data
+```{r}
+ggplot(nest_summary, aes(x = year, y = count, color = species)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~peninsula, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Nest Counts by Species, Peninsula, and Year",
+       x = "Year",
+       y = "Nest Count",
+       color = "Species") +
+  scale_color_manual(values = c("BCNH" = "blue", "DCCO" = "red")) +
+  theme(legend.position = "bottom")
+```
+
+## Statistical summary
+```{r}
+yearly_summary <- nest_summary %>%
+  group_by(year, peninsula, species) %>%
+  summarise(
+    total_count = sum(count),
+    .groups = 'drop'
+  ) %>%
+  pivot_wider(
+    names_from = species,
+    values_from = total_count,
+    values_fill = 0
+  ) %>%
+  mutate(total = BCNH + DCCO)
+
+print(yearly_summary)
+```
+## Trend analysis
+Linear regression for each species and pensinsula
+```{r}
+trend_analysis <- yearly_summary %>%
+  group_by(peninsula) %>%
+  arrange(year) %>%
+  mutate(
+    BCNH_change = BCNH - lag(BCNH),
+    DCCO_change = DCCO - lag(DCCO),
+    total_change = total - lag(total)
+  ) %>%
+  ungroup()
+
+print(trend_analysis)
+```
+## Visualize year-over-year-changes
+```{r}
+ggplot(trend_analysis, aes(x = year)) +
+  geom_line(aes(y = BCNH_change, color = "BCNH")) +
+  geom_line(aes(y = DCCO_change, color = "DCCO")) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_wrap(~peninsula, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Year-over-Year Changes in Nest Counts",
+       x = "Year",
+       y = "Change in Count",
+       color = "Species") +
+  scale_color_manual(values = c("BCNH" = "blue", "DCCO" = "red")) +
+  theme(legend.position = "bottom")
+```
+## Calculate average annual growth rate
+```{r}
+growth_rate <- yearly_summary %>%
+  group_by(peninsula) %>%
+  summarise(
+    BCNH_growth = (last(BCNH) / first(BCNH))^(1/(n()-1)) - 1,
+    DCCO_growth = (last(DCCO) / first(DCCO))^(1/(n()-1)) - 1,
+    total_growth = (last(total) / first(total))^(1/(n()-1)) - 1
+  ) %>%
+  ungroup()
+
+print(growth_rate)
+```
+
+## prep to calculate Moran's I
+Create sf, write function for Moran's I
+```{r}
+sf_data <- nest_summary %>%
+  st_as_sf(coords = c("xcoord", "ycoord"), crs = 32617)  # WGS 1984 UTM Zone 17N
+```
+
+```{r}
+# Function to calculate Moran's I
+moran_i <- function(x, w) {
+  n <- length(x)
+  if (n < 2) return(NA)  # Return NA if less than 2 non-zero values
+  xbar <- mean(x)
+  z <- x - xbar
+  w_sum <- sum(w$weights)
+  numerator <- sum(w$weights * outer(z, z, "*"))
+  denominator <- sum(z^2)
+  (n / w_sum) * (numerator / denominator)
+}
+```
+##diagnostics for moran's i errors (omit if not needed)
+```{r}
+# Add this before the morans_i_results calculation
+sf_data %>%
+  group_by(year, species) %>%
+  summarise(
+    n = n(),
+    n_unique = n_distinct(count),
+    min = min(count),
+    max = max(count),
+    mean = mean(count),
+    n_zero = sum(count == 0),
+    n_na = sum(is.na(count)),
+    .groups = 'drop'
+  ) %>%
+  print(n = Inf)
+```
+## test for 1997-2002 (omit if not needed)
+```{r}
+sf_data_subset <- sf_data %>%
+  filter(year >= 1997 & year <= 2002)
+# Calculate Moran's I for each year and species in the subset
+morans_i_results_subset <- sf_data_subset %>%
+  filter(count > 0) %>%  # Exclude zero values
+  group_by(year, species) %>%
+  summarise(
+    morans_i = {
+      if (n() < 2) {
+        NA  # Not enough points for Moran's I calculation
+      } else {
+        # Convert MULTIPOINT to individual points
+        points <- st_cast(geometry, "POINT")
+        coords <- st_coordinates(points)
+        
+        # Create distance-based weights
+        dists <- as.matrix(dist(coords))
+        w <- 1 / (dists + 1)  # Add 1 to avoid division by zero
+        diag(w) <- 0  # Set diagonal to 0
+        
+        # Normalize weights
+        w <- w / rowSums(w)
+        
+        # Calculate Moran's I
+        moran_i(count, list(weights = w))
+      }
+    },
+    n_nonzero = n(),
+    .groups = 'drop'
+  ) %>%
+  st_drop_geometry()
+```
+
+## Calculate Moran's I for allyears & species
+```{r}
+# Calculate Moran's I for each year and species
+morans_i_results <- sf_data %>%
+  filter(count > 0) %>%  # Exclude zero values
+  group_by(year, species) %>%
+  summarise(
+    morans_i = {
+      if (n() < 2) {
+        NA  # Not enough points for Moran's I calculation
+      } else {
+        # Convert MULTIPOINT to individual points
+        points <- st_cast(geometry, "POINT")
+        coords <- st_coordinates(points)
+        
+        # Create distance-based weights
+        dists <- as.matrix(dist(coords))
+        w <- 1 / (dists + 1)  # Add 1 to avoid division by zero
+        diag(w) <- 0  # Set diagonal to 0
+        
+        # Normalize weights
+        w <- w / rowSums(w)
+        
+        # Calculate Moran's I
+        moran_i(count, list(weights = w))
+      }
+    },
+    n_nonzero = n(),
+    .groups = 'drop'
+  ) %>%
+  st_drop_geometry()
+
+```
+
+## Visualize Moran's I over time
+```{r}
+ggplot(morans_i_results, aes(x = year, y = morans_i, color = species)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Moran's I over time by species",
+       x = "Year",
+       y = "Moran's I")
+```
+
+## Save desired output as CSV with current date in filename
+```{r}
+current_date <- format(Sys.Date(), "%Y%m%d")
+file_path <- "C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/"
+filename <- paste0(file_path, "morans_i_results_", current_date, ".csv")
+write.csv(morans_i_results, file = filename, row.names = FALSE)
+cat("Moran's I results have been saved to", filename, "\n")
+```
+
