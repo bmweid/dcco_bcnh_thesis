@@ -1,0 +1,100 @@
+---
+title: "Colony Growth Index"
+output: html_document
+date: "2024-08-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Purpose of code
+This code calculates colony growth index following Wyman et al. (2018), Guillamet et al. (201?). Growth Index = (Nt - Nt-1) / max(Nt, Nt-1)
+Where Nt is the count in the current year, Nt-1 is the count in the previous year
+To do this: 
+Group the data by species and peninsula
+Sort by year within each group
+Calculate the difference in count between consecutive years
+Calculate the maximum of the current and previous year's count
+Apply the formula
+
+## Load libraries & data
+```{r}
+library (tidyverse)
+library (dplyr)
+library (tidyr)
+library(conflicted)
+conflict_prefer("lag", "dplyr")
+conflict_prefer("filter", "dplyr")
+
+nest_data <- read.csv ("C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/arcgismerged_cleanedbcnhdcco.csv")
+
+```
+
+## Pivot data for analysis
+Ensure each year treated as numeric value, grouped by year, peninsula, and tag. Summarize count for each species. 
+Then reshape for easier plotting & clean column names for species.
+```{r}
+nest_summary <- nest_data %>%
+  mutate(year = as.numeric(year)) %>%
+  group_by(year, peninsula, tag, xcoord, ycoord) %>% 
+  summarise(
+    bcnh_count = sum(bcnh_count),
+    dcco_count = sum(dcco_count),
+    .groups = 'drop'
+  ) %>%
+  tidyr::pivot_longer(
+    cols = c(bcnh_count, dcco_count),
+    names_to = "species",
+    values_to = "count"
+  ) %>%
+  mutate(species = ifelse(species == "bcnh_count", "BCNH", "DCCO"))
+```
+
+## Calculate growth index
+Group the data by species and peninsula
+Filter any data that has missing peninsulas
+Sort by year within each group
+Calculate the previous year's count (prev_count)
+Calculate the difference between current and previous count (count_diff)
+Calculate the maximum of current and previous count (count_max)
+Apply the growth index formula
+Ungroup the data
+The first year in each group will have NA for growth_index because there's no previous year to compare to.
+If both the current and previous count are 0, growth_index will be NaN (0/0). 
+```{r}
+growth_index <- nest_summary %>%
+  # remove rows where peninsula is NA
+  dplyr::filter(!is.na(peninsula) & peninsula != "") %>%
+  # group and summarize to get totals
+  group_by(year, peninsula, species) %>%
+  summarize(total_count = sum(count, na.rm = TRUE), .groups = "drop") %>%
+  # group by peninsula and species to calculate year-over-year changes
+  group_by(peninsula, species) %>%
+  arrange(year) %>%
+  mutate(
+    prev_count = dplyr::lag(total_count),
+    count_diff = total_count - prev_count,
+    count_max = pmax(total_count, prev_count),
+    growth_index = ifelse(count_max == 0, 0, count_diff / count_max)
+  ) %>%
+  ungroup()
+```
+
+## Check results
+```{r}
+head(growth_index)
+
+growth_index %>% 
+  dplyr::filter(is.na(peninsula) | peninsula == "") %>% 
+  nrow()
+```
+
+## Save desired output as CSV with current date in filename
+```{r}
+current_date <- format(Sys.Date(), "%Y%m%d")
+file_path <- "C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/"
+filename <- paste0(file_path, "colony_growth_index_", current_date, ".csv")
+write.csv(growth_index, file = filename, row.names = FALSE)
+cat("colony growth index results have been saved to", filename, "\n")
+```
