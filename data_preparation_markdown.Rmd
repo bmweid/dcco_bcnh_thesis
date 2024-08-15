@@ -1,0 +1,94 @@
+---
+title: "data_preparation"
+output: html_document
+date: "2024-08-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import data and load library
+```{r}
+library(tidyverse)
+
+# Import data
+nest_density <- read_csv("C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/morans_i_results_20240813.csv")
+colony_growth_index <- read_csv("C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/colony_growth_index_20240814.csv")
+road_proximity <- read_csv("C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/road_proximity_bcnh.csv")
+bcnh_nest_success <- read_csv("C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/bcnh_nest_success.csv")
+dcco_usurpation <- read_csv("C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/dcco_usurpation.csv")
+dcco_management <- read_csv("C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/dcco_management.csv")
+
+```
+
+## standardize species & remove unnecessary columns 
+some datasets have capitalized species names; need to be consistent
+```{r}
+#function to standarize species
+standardize_species <- function(df) {
+  if ("species" %in% names(df)) {
+    df <- df %>%
+      mutate(species = case_when(
+        str_detect(tolower(species), "bcnh|black") ~ "BCNH",
+        str_detect(tolower(species), "dcco|double") ~ "DCCO",
+        TRUE ~ species
+      ))
+  } else if ("bcnh_count" %in% names(df) && "dcco_count" %in% names(df)) {
+    df <- df %>%
+      pivot_longer(c(bcnh_count, dcco_count), 
+                   names_to = "species", 
+                   values_to = "count") %>%
+      mutate(species = if_else(species == "bcnh_count", "BCNH", "DCCO"))
+  }
+  return(df)
+}
+
+datasets <- list(nest_density, colony_growth_index, road_proximity, 
+                 bcnh_nest_success, dcco_usurpation, dcco_management)
+
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    standardize_species() %>%
+    select(-any_of(c("xcoord", "ycoord", "easting", "northing", "tag", "treeid")))
+})
+
+list2env(setNames(datasets, c("nest_density", "colony_growth_index", "road_proximity", 
+                              "bcnh_nest_success", "dcco_usurpation", "dcco_management")), .GlobalEnv)
+```
+## check for duplicate entries
+```{r}
+for (name in c("nest_density", "colony_growth_index", "road_proximity", 
+               "bcnh_nest_success", "dcco_usurpation", "dcco_management")) {
+  df <- get(name)
+  duplicates <- df %>% 
+    group_by(year, peninsula, species) %>% 
+    filter(n() > 1) %>% 
+    ungroup()
+  
+  if (nrow(duplicates) > 0) {
+    print(paste("Duplicates found in", name))
+    print(duplicates)
+  } else {
+    print(paste("No duplicates in", name))
+  }
+}
+```
+#Combine data & check combined dataset
+```{r}
+combined_data <- nest_density %>%
+  full_join(colony_growth_index, by = c("year", "peninsula", "species")) %>%
+  full_join(road_proximity, by = c("year", "peninsula", "species")) %>%
+  full_join(bcnh_nest_success, by = c("year", "peninsula", "species")) %>%
+  full_join(dcco_usurpation, by = c("year", "peninsula", "species")) %>%
+  full_join(dcco_management, by = c("year", "peninsula", "species"))
+
+str(combined_data)
+summary(combined_data)
+```
+
+## save combined data for model
+```{r}
+write_csv(combined_data, "C:/Users/baill/OneDrive/r-projects/cormorant-colony-analysis/current working files/model datasets/combined_model_data.csv")
+```
+
