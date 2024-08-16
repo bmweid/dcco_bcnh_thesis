@@ -1,0 +1,30 @@
+model {
+  for (i in 1:N) {
+    y[i] ~ dnorm(mu[i], tau)
+    mu[i] <- beta[1] + beta[2] * nest_density[i] + beta[3] * road_proximity[i] + 
+             beta[4] * bcnh_nest_success[i] + beta[5] * dcco_usurpation[i] + 
+             beta[6] * dcco_management[i] + alpha_year[year[i]]
+    
+    # Log-likelihood for WAIC calculation
+    loglik[i] <- logdensity.norm(y[i], mu[i], tau)
+    
+    # Generate posterior predictive samples
+    y_rep[i] ~ dnorm(mu[i], tau)
+  }
+  
+  # Priors for fixed effects
+  for (j in 1:6) {
+    beta[j] ~ dnorm(0, 0.001)
+  }
+  
+  # Prior for residual precision
+  tau <- pow(sigma, -2)
+  sigma ~ dunif(0, 100)
+  
+  # Priors for random year effect
+  for (t in 1:N_years) {
+    alpha_year[t] ~ dnorm(0, tau_year)
+  }
+  tau_year <- pow(sigma_year, -2)
+  sigma_year ~ dunif(0, 100)
+}
